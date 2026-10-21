@@ -1,0 +1,6 @@
+pyinstaller>=6.0
+pillow
+keyboard
+psutil
+cryptography
+pygame
