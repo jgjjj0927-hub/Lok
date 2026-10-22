@@ -21,8 +21,7 @@ jobs:
         run: |
           pyinstaller --noconsole --onefile --uac-admin --add-data "assets;assets" --add-data "scream.mp3;." --name locker locker.py
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: locker-exe
           path: dist/locker.exe
