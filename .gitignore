@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+build/
+dist/
+*.spec
+*.log
+attempts.dat
+state.dat
+watchdog.pid
+reboot.trigger
+defender_bypass.log
+Thumbs.db
+.DS_Store
