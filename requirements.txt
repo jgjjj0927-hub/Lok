@@ -4,3 +4,4 @@ keyboard
 psutil
 cryptography
 pygame
+wmi
