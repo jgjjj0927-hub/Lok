@@ -16,12 +16,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Create clean venv
         run: |
-          python -m pip install --upgrade pip
-          pip install pillow pygame==2.6.1 psutil wmi pyinstaller
+          python -m venv venv
+          .\venv\Scripts\python.exe -m pip install --upgrade pip
 
-      - name: Exclude TEMP from Defender
+      - name: Install dependencies in venv
+        run: |
+          .\venv\Scripts\pip.exe install -r requirements.txt
+
+      - name: Exclude TEMP and workspace from Defender
         shell: powershell
         run: |
           Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue
@@ -35,11 +39,23 @@ jobs:
           if (Test-Path locker_button.spec) { Remove-Item -Force locker_button.spec }
 
       - name: Verify syntax
-        run: python -c "import ast; ast.parse(open('locker_button.py', encoding='utf-8').read())"
+        run: |
+          .\venv\Scripts\python.exe -c "import ast; ast.parse(open('locker_button.py', encoding='utf-8').read())"
 
       - name: Build EXE (onedir)
         run: |
-          pyinstaller --clean --noconsole --onedir --name locker_button --add-data "assets;assets" --add-data "scream.mp3;." locker_button.py
+          .\venv\Scripts\pyinstaller.exe --clean --noconsole --onedir --name locker_button --add-data "assets;assets" --add-data "scream.mp3;." locker_button.py
+
+      - name: Verify python311.dll in _internal
+        shell: powershell
+        run: |
+          $dll = Get-ChildItem -Recurse -Filter "python311.dll" -Path "dist\locker_button" -ErrorAction SilentlyContinue
+          if (-not $dll) {
+            Write-Host "::error::python311.dll NOT found in dist\locker_button\_internal. Build is broken."
+            Get-ChildItem -Recurse -Path "dist\locker_button" | Select-Object FullName
+            exit 1
+          }
+          Write-Host "python311.dll found at: $($dll.FullName)"
 
       - name: Upload artifact (folder)
         uses: actions/upload-artifact@v4
